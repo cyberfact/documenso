@@ -1,0 +1,59 @@
+name: documenso-production
+
+services:
+  database:
+    image: postgres:15
+    environment:
+      - PORT=${PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-documenso}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-Th6gf3AC}
+      - POSTGRES_DB=${POSTGRES_DB:-documenso}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U documenso']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - database:/var/lib/postgresql/data
+    ports:
+      - ${PORT:-5432}:${PORT:-5432}
+  documenso:
+    image: documenso/documenso:v1.8.1
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      - PORT=${PORT:-3000}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-https://sign.lionheart-it.de}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-Th6gf3AC}
+      - NEXT_PRIVATE_ENCRYPTION_KEY=${EXT_PRIVATE_ENCRYPTION_KEY:-Roy2bJGzzNBlrk6LmpX4GfND51f26maK}
+      - NEXT_PRIVATE_ENCRYPTION_SECONDARY_KEY=${NEXT_PRIVATE_ENCRYPTION_SECONDARY_KEY:-ib5NFEcbXIikwX0MhcN1p8KRhJuqGeh3}
+      - NEXT_PUBLIC_WEBAPP_URL=${NEXT_PUBLIC_WEBAPP_URL:-https://sign.lionheart-it.de}
+      - NEXT_PRIVATE_INTERNAL_WEBAPP_URL=${NEXT_PRIVATE_INTERNAL_WEBAPP_URL:-http://192.168.50.14:3000}
+      - NEXT_PUBLIC_MARKETING_URL=${NEXT_PUBLIC_MARKETING_URL:-https://sign.lionheart-it.de}
+      - NEXT_PRIVATE_DATABASE_URL=${NEXT_PRIVATE_DATABASE_URL:-postgres://documenso:Th6gf3AC@172.18.0.2:5432/documenso}
+      - NEXT_PRIVATE_DIRECT_DATABASE_URL=${NEXT_PRIVATE_DIRECT_DATABASE_URL:-postgres://documenso:Th6gf3AC@172.18.0.2:5432/documenso}
+      - NEXT_PUBLIC_UPLOAD_TRANSPORT=${NEXT_PUBLIC_UPLOAD_TRANSPORT:-database}
+      - NEXT_PRIVATE_SMTP_TRANSPORT=${NEXT_PRIVATE_SMTP_TRANSPORT:-smtp-auth}
+      - NEXT_PRIVATE_SMTP_HOST=${NEXT_PRIVATE_SMTP_HOST:-isp.lionheart-consulting.de}
+      - NEXT_PRIVATE_SMTP_PORT=${NEXT_PRIVATE_SMTP_PORT:-25}
+      - NEXT_PRIVATE_SMTP_USERNAME=${NEXT_PRIVATE_SMTP_USERNAME:-mail@lionheart-it.de}
+      - NEXT_PRIVATE_SMTP_PASSWORD=${NEXT_PRIVATE_SMTP_PASSWORD:-Th6gf3AC#x}
+      - NEXT_PRIVATE_SMTP_SECURE=${NEXT_PRIVATE_SMTP_SECURE:-false}
+      - NEXT_PRIVATE_SMTP_UNSAFE_IGNORE_TLS=${NEXT_PRIVATE_SMTP_UNSAFE_IGNORE_TLS:-true}
+      - NEXT_PRIVATE_SMTP_FROM_NAME=${NEXT_PRIVATE_SMTP_FROM_NAME:-LIONHEART IT PLG} # geaendert am 11.12.24
+      - NEXT_PRIVATE_SMTP_FROM_ADDRESS=${NEXT_PRIVATE_SMTP_FROM_ADDRESS:-mail@lionheart-it.de}
+      - NEXT_PRIVATE_RESEND_API_KEY=${NEXT_PRIVATE_RESEND_API_KEY}
+      - NEXT_PUBLIC_DOCUMENT_SIZE_UPLOAD_LIMIT=${NEXT_PUBLIC_DOCUMENT_SIZE_UPLOAD_LIMIT:-50}
+      - NEXT_PRIVATE_SIGNING_TRANSPORT=${NEXT_PRIVATE_SIGNING_TRANSPORT:-local} # eingefuegt am 11.12.24
+      - NEXT_PUBLIC_DISABLE_SIGNUP=${NEXT_PUBLIC_DISABLE_SIGNUP:-false}
+      - NEXT_PRIVATE_SIGNING_LOCAL_FILE_PATH=${NEXT_PRIVATE_SIGNING_LOCAL_FILE_PATH:-/opt/documenso/cert} # geaendert am 11.12.24
+      # - NEXT_PRIVATE_SIGNING_PASSPRHASE=${NEXT_PRIVATE_SIGNING_PASSPRHASE:-Th6gf3AC}
+      # E2E Parameter entfernt am 11.12.24
+    ports:
+      - ${PORT:-3000}:${PORT:-3000}
+    volumes:
+      - /opt/documenso/cert:/opt/documenso/cert # geaendert am 11.12.24
+
+volumes:
+  database:

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useLayoutEffect, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 
 import { Trans, msg } from '@lingui/macro';
 import { useLingui } from '@lingui/react';
@@ -10,7 +10,13 @@ import { useThrottleFn } from '@documenso/lib/client-only/hooks/use-throttle-fn'
 import { PDF_VIEWER_PAGE_SELECTOR } from '@documenso/lib/constants/pdf-viewer';
 import { validateFieldsInserted } from '@documenso/lib/utils/fields';
 import type { DocumentMeta, TemplateMeta } from '@documenso/prisma/client';
-import { type DocumentData, type Field, FieldType, RecipientRole } from '@documenso/prisma/client';
+import {
+  type DocumentData,
+  type Field,
+  FieldType,
+  RecipientRole,
+  SigningStatus,
+} from '@documenso/prisma/client';
 import type { RecipientWithFields } from '@documenso/prisma/types/recipient-with-fields';
 import { trpc } from '@documenso/trpc/react';
 import { FieldToolTip } from '@documenso/ui/components/field/field-tooltip';
@@ -26,11 +32,13 @@ import { useToast } from '@documenso/ui/primitives/use-toast';
 
 import { useRequiredSigningContext } from '~/app/(signing)/sign/[token]/provider';
 import { RecipientProvider } from '~/app/(signing)/sign/[token]/recipient-context';
+import { RejectDocumentDialog } from '~/app/(signing)/sign/[token]/reject-document-dialog';
 import { Logo } from '~/components/branding/logo';
 
 import { EmbedClientLoading } from '../../client-loading';
 import { EmbedDocumentCompleted } from '../../completed';
 import { EmbedDocumentFields } from '../../document-fields';
+import { EmbedDocumentRejected } from '../../rejected';
 import { injectCss } from '../../util';
 import { ZSignDocumentEmbedDataSchema } from './schema';
 
@@ -43,7 +51,7 @@ export type EmbedSignDocumentClientPageProps = {
   metadata?: DocumentMeta | TemplateMeta | null;
   isCompleted?: boolean;
   hidePoweredBy?: boolean;
-  isPlatformOrEnterprise?: boolean;
+  allowWhitelabelling?: boolean;
   allRecipients?: RecipientWithFields[];
 };
 
@@ -56,7 +64,7 @@ export const EmbedSignDocumentClientPage = ({
   metadata,
   isCompleted,
   hidePoweredBy = false,
-  isPlatformOrEnterprise = false,
+  allowWhitelabelling = false,
   allRecipients = [],
 }: EmbedSignDocumentClientPageProps) => {
   const { _ } = useLingui();
@@ -75,13 +83,21 @@ export const EmbedSignDocumentClientPage = ({
   const [hasFinishedInit, setHasFinishedInit] = useState(false);
   const [hasDocumentLoaded, setHasDocumentLoaded] = useState(false);
   const [hasCompletedDocument, setHasCompletedDocument] = useState(isCompleted);
+  const [hasRejectedDocument, setHasRejectedDocument] = useState(
+    recipient.signingStatus === SigningStatus.REJECTED,
+  );
   const [selectedSignerId, setSelectedSignerId] = useState<number | null>(
     allRecipients.length > 0 ? allRecipients[0].id : null,
   );
 
   const [isExpanded, setIsExpanded] = useState(false);
+  const [hasAutoExpanded, setHasAutoExpanded] = useState(false);
   const [isNameLocked, setIsNameLocked] = useState(false);
   const [showPendingFieldTooltip, setShowPendingFieldTooltip] = useState(false);
+
+  const [allowDocumentRejection, setAllowDocumentRejection] = useState(false);
+
+  const documentEndRef = useRef<HTMLDivElement>(null);
 
   const selectedSigner = allRecipients.find((r) => r.id === selectedSignerId);
   const isAssistantMode = recipient.role === RecipientRole.ASSISTANT;
@@ -161,6 +177,25 @@ export const EmbedSignDocumentClientPage = ({
     }
   };
 
+  const onDocumentRejected = (reason: string) => {
+    if (window.parent) {
+      window.parent.postMessage(
+        {
+          action: 'document-rejected',
+          data: {
+            token,
+            documentId,
+            recipientId: recipient.id,
+            reason,
+          },
+        },
+        '*',
+      );
+    }
+
+    setHasRejectedDocument(true);
+  };
+
   useLayoutEffect(() => {
     const hash = window.location.hash.slice(1);
 
@@ -174,12 +209,13 @@ export const EmbedSignDocumentClientPage = ({
       // Since a recipient can be provided a name we can lock it without requiring
       // a to be provided by the parent application, unlike direct templates.
       setIsNameLocked(!!data.lockName);
+      setAllowDocumentRejection(!!data.allowDocumentRejection);
 
       if (data.darkModeDisabled) {
         document.documentElement.classList.add('dark-mode-disabled');
       }
 
-      if (isPlatformOrEnterprise) {
+      if (allowWhitelabelling) {
         injectCss({
           css: data.css,
           cssVars: data.cssVars,
@@ -208,6 +244,46 @@ export const EmbedSignDocumentClientPage = ({
     }
   }, [hasFinishedInit, hasDocumentLoaded]);
 
+  // Set up intersection observer to auto-expand widget when user reaches bottom of document
+  useEffect(() => {
+    if (!hasDocumentLoaded || !hasFinishedInit || hasAutoExpanded || isExpanded) {
+      return;
+    }
+
+    // Add a delay to ensure document has fully rendered and stabilized
+    const timeoutId = setTimeout(() => {
+      const pageCount = document.querySelectorAll(PDF_VIEWER_PAGE_SELECTOR).length;
+
+      // Only set up the observer if there's more than one page
+      if (pageCount <= 1) return;
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const [entry] = entries;
+
+          if (entry.isIntersecting) {
+            setIsExpanded(true);
+            setHasAutoExpanded(true);
+            observer.disconnect();
+          }
+        },
+        { threshold: 1.0 },
+      );
+
+      if (documentEndRef.current) {
+        observer.observe(documentEndRef.current);
+      }
+    }, 1500); // 1.5 second delay
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [hasDocumentLoaded, hasFinishedInit, hasAutoExpanded, isExpanded]);
+
+  if (hasRejectedDocument) {
+    return <EmbedDocumentRejected name={fullName} />;
+  }
+
   if (hasCompletedDocument) {
     return (
       <EmbedDocumentCompleted
@@ -226,27 +302,39 @@ export const EmbedSignDocumentClientPage = ({
 
   return (
     <RecipientProvider recipient={recipient} targetSigner={selectedSigner ?? null}>
-      <div className="relative mx-auto flex min-h-[100dvh] max-w-screen-lg flex-col items-center justify-center p-6">
+      <div className="embed--Root relative mx-auto flex min-h-[100dvh] max-w-screen-lg flex-col items-center justify-center p-6">
         {(!hasFinishedInit || !hasDocumentLoaded) && <EmbedClientLoading />}
 
-        <div className="relative flex w-full flex-col gap-x-6 gap-y-12 md:flex-row">
+        {allowDocumentRejection && (
+          <div className="embed--Actions mb-4 flex w-full flex-row-reverse items-baseline justify-between">
+            <RejectDocumentDialog
+              document={{ id: documentId }}
+              token={token}
+              onRejected={onDocumentRejected}
+            />
+          </div>
+        )}
+
+        <div className="embed--DocumentContainer relative flex w-full flex-col gap-x-6 gap-y-12 md:flex-row">
           {/* Viewer */}
-          <div className="flex-1">
+          <div className="embed--DocumentViewer flex-1">
             <LazyPDFViewer
               documentData={documentData}
               onDocumentLoad={() => setHasDocumentLoaded(true)}
             />
+            {/* Observer target at the bottom of the document */}
+            <div ref={documentEndRef} className="h-4 w-full" />
           </div>
 
           {/* Widget */}
           <div
             key={isExpanded ? 'expanded' : 'collapsed'}
-            className="group/document-widget fixed bottom-8 left-0 z-50 h-fit w-full flex-shrink-0 px-6 md:sticky md:top-4 md:z-auto md:w-[350px] md:px-0"
+            className="embed--DocumentWidgetContainer group/document-widget fixed bottom-8 left-0 z-50 h-fit w-full flex-shrink-0 px-6 md:sticky md:top-4 md:z-auto md:w-[350px] md:px-0"
             data-expanded={isExpanded || undefined}
           >
-            <div className="border-border bg-widget flex w-full flex-col rounded-xl border px-4 py-4 md:py-6">
+            <div className="embed--DocumentWidget border-border bg-widget flex w-full flex-col rounded-xl border px-4 py-4 md:py-6">
               {/* Header */}
-              <div>
+              <div className="embed--DocumentWidgetHeader">
                 <div className="flex items-center justify-between gap-x-2">
                   <h3 className="text-foreground text-xl font-semibold md:text-2xl">
                     {isAssistantMode ? (
@@ -256,23 +344,40 @@ export const EmbedSignDocumentClientPage = ({
                     )}
                   </h3>
 
-                  <Button variant="outline" className="h-8 w-8 p-0 md:hidden">
-                    {isExpanded ? (
-                      <LucideChevronDown
-                        className="text-muted-foreground h-5 w-5"
-                        onClick={() => setIsExpanded(false)}
-                      />
-                    ) : (
-                      <LucideChevronUp
-                        className="text-muted-foreground h-5 w-5"
-                        onClick={() => setIsExpanded(true)}
-                      />
-                    )}
-                  </Button>
+                  {isExpanded ? (
+                    <Button
+                      variant="outline"
+                      className="bg-background dark:bg-foreground h-8 w-8 p-0 md:hidden"
+                      onClick={() => setIsExpanded(false)}
+                    >
+                      <LucideChevronDown className="text-muted-foreground dark:text-background h-5 w-5" />
+                    </Button>
+                  ) : pendingFields.length > 0 ? (
+                    <Button
+                      variant="outline"
+                      className="bg-background dark:bg-foreground h-8 w-8 p-0 md:hidden"
+                      onClick={() => setIsExpanded(true)}
+                    >
+                      <LucideChevronUp className="text-muted-foreground dark:text-background h-5 w-5" />
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="md:hidden"
+                      disabled={
+                        isThrottled || (!isAssistantMode && hasSignatureField && !signatureValid)
+                      }
+                      loading={isSubmitting}
+                      onClick={() => throttledOnCompleteClick()}
+                    >
+                      <Trans>Complete</Trans>
+                    </Button>
+                  )}
                 </div>
               </div>
 
-              <div className="hidden group-data-[expanded]/document-widget:block md:block">
+              <div className="embed--DocumentWidgetContent hidden group-data-[expanded]/document-widget:block md:block">
                 <p className="text-muted-foreground mt-2 text-sm">
                   {isAssistantMode ? (
                     <Trans>Help complete the document for other signers.</Trans>
@@ -285,7 +390,7 @@ export const EmbedSignDocumentClientPage = ({
               </div>
 
               {/* Form */}
-              <div className="-mx-2 hidden px-2 group-data-[expanded]/document-widget:block md:block">
+              <div className="embed--DocumentWidgetForm -mx-2 hidden px-2 group-data-[expanded]/document-widget:block md:block">
                 <div className="flex flex-1 flex-col gap-y-4">
                   {isAssistantMode && (
                     <div>
@@ -413,14 +518,14 @@ export const EmbedSignDocumentClientPage = ({
 
               <div className="hidden flex-1 group-data-[expanded]/document-widget:block md:block" />
 
-              <div className="mt-4 hidden w-full grid-cols-2 items-center group-data-[expanded]/document-widget:grid md:grid">
+              <div className="embed--DocumentWidgetFooter mt-4 hidden w-full grid-cols-2 items-center group-data-[expanded]/document-widget:grid md:grid">
                 {pendingFields.length > 0 ? (
                   <Button className="col-start-2" onClick={() => onNextFieldClick()}>
                     <Trans>Next</Trans>
                   </Button>
                 ) : (
                   <Button
-                    className="col-start-2"
+                    className={allowDocumentRejection ? 'col-start-2' : 'col-span-2'}
                     disabled={
                       isThrottled || (!isAssistantMode && hasSignatureField && !signatureValid)
                     }
